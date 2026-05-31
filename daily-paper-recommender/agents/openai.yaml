@@ -1,0 +1,4 @@
+interface:
+  display_name: "Daily Paper Recommender"
+  short_description: "Daily arXiv picks from Zotero"
+  default_prompt: "Use $daily-paper-recommender to refresh my Zotero-based profile and recommend today's top arXiv papers."
