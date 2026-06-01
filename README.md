@@ -31,15 +31,11 @@ cp -R daily-paper-recommender ~/.codex/skills/
 
 Restart Codex after installing so it can discover the skill.
 
-## Zotero 要求 / Zotero Requirement
+## Zotero 本地 API / Zotero Local API
 
-打开 Zotero 并启用本地应用通信：
+这个 skill 会自动启用 Zotero Local API 并重启 Zotero；通常不需要手动进入 Zotero 设置。
 
-Open Zotero and enable local application communication:
-
-```text
-Settings / Preferences -> Advanced -> Allow other applications on this computer to communicate with Zotero
-```
+This skill automatically enables Zotero Local API and restarts Zotero when needed; manual Zotero settings are usually not required.
 
 该 skill 默认使用：
 
@@ -48,6 +44,10 @@ The skill uses this endpoint by default:
 ```text
 http://127.0.0.1:23119/api/users/0/items
 ```
+
+如果自动设置失败，再确认 Zotero 已安装并至少启动过一次。
+
+If auto-setup fails, confirm Zotero is installed and has been launched at least once.
 
 ## 示例 Prompt / Example Prompt
 

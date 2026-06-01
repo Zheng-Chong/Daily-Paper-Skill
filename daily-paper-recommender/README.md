@@ -23,23 +23,16 @@ cp -R /Users/[your-username]/Documents/Daily-Paper-Skill/daily-paper-recommender
 
 Restart Codex after installing so it can discover the skill.
 
-## 启用 Zotero Local API / Enable Zotero Local API
+## Zotero Local API
 
-打开 Zotero，进入：
+通常不需要手动启用 Zotero Local API。推荐脚本会自动：
 
-Open Zotero and go to:
+Manual Zotero Local API setup is usually unnecessary. The recommendation script automatically:
 
-```text
-Settings / Preferences -> Advanced
-```
-
-启用：
-
-Enable:
-
-```text
-Allow other applications on this computer to communicate with Zotero
-```
+- 探测 `http://127.0.0.1:23119/api/`；
+- 找到 Zotero 当前 profile 的 `prefs.js`；
+- 把 `extensions.zotero.httpServer.localAPI.enabled` 设为 `true`；
+- 重启 Zotero，并等待本地 API 可访问。
 
 Zotero 设置页显示的本地 API 根地址是：
 
@@ -63,6 +56,16 @@ You can verify Zotero from a terminal:
 
 ```bash
 curl "http://127.0.0.1:23119/api/users/0/items?sort=dateModified&direction=desc&limit=3&format=json"
+```
+
+如果需要调试自动设置流程，可以临时关闭它：
+
+For debugging, you can temporarily disable auto-setup:
+
+```bash
+python3 daily-paper-recommender/scripts/recommend_daily_papers.py \
+  --profile-papers 80 \
+  --no-auto-enable-zotero
 ```
 
 ## 在 Codex 中使用 / Use In Codex
@@ -159,8 +162,8 @@ The profile is refreshed when it is missing or older than one week. Recommendati
 
 If the script says `zotero_unavailable`:
 
-1. 确认 Zotero 已打开。 / Confirm Zotero is open.
-2. 确认 Zotero 设置中已启用本地应用通信。 / Confirm local application communication is enabled in Zotero settings.
+1. 查看输出里的 `zotero_auto_setup`。/ Check `zotero_auto_setup` in the output.
+2. 确认 Zotero 已安装并至少启动过一次。 / Confirm Zotero is installed and has been launched at least once.
 3. 用 `127.0.0.1` 和 `curl` 测试 API。 / Test the API with `curl` using `127.0.0.1`.
 4. 使用 `--zotero-api-root http://127.0.0.1:23119/api` 重新运行。 / Rerun with `--zotero-api-root http://127.0.0.1:23119/api`.
 

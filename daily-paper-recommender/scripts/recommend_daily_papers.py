@@ -4,11 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import datetime as dt
 import html
 import json
 import math
+import os
+import platform
 import re
+import shutil
+import subprocess
 import sys
 import time
 import urllib.error
@@ -20,6 +25,7 @@ from pathlib import Path
 
 ZOTERO_API_ROOT = "http://127.0.0.1:23119/api"
 ZOTERO_LIBRARY_PREFIX = "users/0"
+ZOTERO_LOCAL_API_PREF = "extensions.zotero.httpServer.localAPI.enabled"
 ARXIV_BASE = "https://export.arxiv.org/api/query"
 ATOM = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 
@@ -78,6 +84,188 @@ def http_json(url: str, timeout: int = 8) -> object:
     req = urllib.request.Request(url, headers={"Zotero-API-Version": "3", "User-Agent": "daily-paper-recommender/1.0"})
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def zotero_roots() -> list[Path]:
+    home = Path.home()
+    system = platform.system()
+    roots: list[Path] = []
+
+    if system == "Darwin":
+        roots.append(home / "Library/Application Support/Zotero")
+    elif system == "Windows":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            roots.extend([Path(appdata) / "Zotero/Zotero", Path(appdata) / "Zotero"])
+    else:
+        roots.extend([
+            home / ".zotero/zotero",
+            home / ".var/app/org.zotero.Zotero/data/zotero",
+        ])
+
+    roots.append(home / "Library/Application Support/Zotero")
+    return list(dict.fromkeys(roots))
+
+
+def zotero_profiles_ini() -> Path | None:
+    for root in zotero_roots():
+        candidate = root / "profiles.ini"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def zotero_profile_dir() -> Path | None:
+    ini = zotero_profiles_ini()
+    if ini is None:
+        return None
+
+    parser = configparser.RawConfigParser()
+    parser.read(ini)
+    root = ini.parent
+    candidates: list[tuple[int, Path]] = []
+
+    for section in parser.sections():
+        if not section.lower().startswith("profile") or not parser.has_option(section, "Path"):
+            continue
+        raw_path = parser.get(section, "Path")
+        path = root / raw_path if parser.get(section, "IsRelative", fallback="1") == "1" else Path(raw_path)
+        score = 0
+        if parser.get(section, "Default", fallback="0") == "1":
+            score += 10
+        if (path / "prefs.js").exists():
+            score += 5
+        candidates.append((score, path))
+
+    if candidates:
+        return max(candidates, key=lambda item: item[0])[1]
+
+    profiles = sorted((root / "Profiles").glob("*.default*"))
+    return profiles[0] if profiles else None
+
+
+def zotero_prefs_file() -> Path | None:
+    profile = zotero_profile_dir()
+    if profile is None:
+        return None
+    candidate = profile / "prefs.js"
+    return candidate if candidate.exists() else None
+
+
+def zotero_pref_pattern() -> re.Pattern[str]:
+    return re.compile(r'user_pref\("' + re.escape(ZOTERO_LOCAL_API_PREF) + r'",\s*(true|false)\s*\);')
+
+
+def read_zotero_local_api_pref() -> bool | None:
+    prefs = zotero_prefs_file()
+    if prefs is None:
+        return None
+    match = zotero_pref_pattern().search(prefs.read_text(encoding="utf-8", errors="replace"))
+    if match is None:
+        return None
+    return match.group(1) == "true"
+
+
+def enable_zotero_local_api_pref() -> Path | None:
+    prefs = zotero_prefs_file()
+    if prefs is None:
+        return None
+
+    backup = prefs.with_suffix(prefs.suffix + f".daily-paper-backup-{int(time.time())}")
+    shutil.copy2(prefs, backup)
+
+    text = prefs.read_text(encoding="utf-8", errors="replace")
+    new_line = f'user_pref("{ZOTERO_LOCAL_API_PREF}", true);'
+    pattern = zotero_pref_pattern()
+    if pattern.search(text):
+        text = pattern.sub(new_line, text, count=1)
+    else:
+        text = text.rstrip("\n") + "\n" + new_line + "\n"
+    prefs.write_text(text, encoding="utf-8")
+    return backup
+
+
+def zotero_api_root_url(api_root: str) -> str:
+    return api_root.rstrip("/") + "/"
+
+
+def zotero_root_available(api_root: str) -> bool:
+    try:
+        req = urllib.request.Request(zotero_api_root_url(api_root), headers={"Zotero-API-Version": "3"})
+        with urllib.request.urlopen(req, timeout=2):
+            return True
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+        return False
+
+
+def restart_zotero_and_wait(api_root: str) -> bool:
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            subprocess.run(
+                ["osascript", "-e", 'tell application "Zotero" to quit'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+            time.sleep(1)
+            subprocess.run(["open", "-a", "Zotero"], check=False)
+        elif system == "Windows":
+            subprocess.run(
+                ["taskkill", "/IM", "zotero.exe", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            time.sleep(1)
+            subprocess.Popen(["zotero.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.run(
+                ["pkill", "-f", "zotero"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            time.sleep(1)
+            subprocess.Popen(["zotero"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        return False
+
+    for _ in range(30):
+        if zotero_root_available(api_root):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def ensure_zotero_local_api(api_root: str) -> dict:
+    before_pref = read_zotero_local_api_pref()
+    if zotero_root_available(api_root):
+        return {
+            "attempted": False,
+            "local_api_enabled_pref_before": before_pref,
+            "local_api_enabled_pref_after": before_pref,
+            "restarted": False,
+            "api_running": True,
+            "backup": None,
+        }
+
+    backup = None
+    if before_pref is not True:
+        backup = enable_zotero_local_api_pref()
+
+    restarted = restart_zotero_and_wait(api_root)
+    after_pref = read_zotero_local_api_pref()
+    return {
+        "attempted": True,
+        "local_api_enabled_pref_before": before_pref,
+        "local_api_enabled_pref_after": after_pref,
+        "restarted": restarted,
+        "api_running": zotero_root_available(api_root),
+        "backup": str(backup) if backup else None,
+        "prefs_file": str(zotero_prefs_file()) if zotero_prefs_file() else None,
+    }
 
 
 def zotero_url(api_root: str, library_prefix: str, path: str, params: dict[str, str] | None = None) -> str:
@@ -277,6 +465,7 @@ def main() -> int:
     parser.add_argument("--per-category", type=int, default=50)
     parser.add_argument("--zotero-api-root", default=ZOTERO_API_ROOT)
     parser.add_argument("--zotero-library-prefix", default=ZOTERO_LIBRARY_PREFIX)
+    parser.add_argument("--no-auto-enable-zotero", action="store_true")
     parser.add_argument("--no-write-state", action="store_true")
     args = parser.parse_args()
 
@@ -295,11 +484,22 @@ def main() -> int:
         return 0
 
     if (stale_profile or args.profile_days or args.profile_papers):
+        zotero_auto_setup = None
+        if not args.no_auto_enable_zotero:
+            zotero_auto_setup = ensure_zotero_local_api(args.zotero_api_root)
         if not zotero_available(args.zotero_api_root, args.zotero_library_prefix):
+            next_action = (
+                "Zotero local API could not be reached after auto-setup. Start Zotero once, confirm the app is installed, or rerun with --zotero-api-root http://127.0.0.1:23119/api."
+            )
+            if args.no_auto_enable_zotero:
+                next_action = (
+                    "Zotero local API could not be reached. Rerun without --no-auto-enable-zotero to allow automatic setup, or use --zotero-api-root http://127.0.0.1:23119/api."
+                )
             print(json.dumps({
                 "status": "zotero_unavailable",
                 "checked_url": zotero_url(args.zotero_api_root, args.zotero_library_prefix, "items", {"limit": "1"}),
-                "next_action": "Open Zotero and enable local API/local application communication. If Codex cannot reach localhost, rerun with --zotero-api-root http://127.0.0.1:23119/api.",
+                "zotero_auto_setup": zotero_auto_setup,
+                "next_action": next_action,
             }, ensure_ascii=False, indent=2))
             return 0
         items = fetch_zotero_items(args.zotero_api_root, args.zotero_library_prefix, args.profile_days, args.profile_papers)
